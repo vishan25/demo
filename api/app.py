@@ -1,16 +1,17 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from pydantic import BaseModel
 import faiss
 import json
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from typing import List, Optional
+from typing import Optional
 import base64
 from PIL import Image
 import io
 import pytesseract
-
 import os
+
+app = FastAPI()
 
 INDEX_PATH = "./faiss_index/index.faiss"
 METADATA_PATH = "./faiss_index/metadata.jsonl"
@@ -21,13 +22,12 @@ model = SentenceTransformer(EMBED_MODEL)
 index = faiss.read_index(INDEX_PATH)
 metadata = [json.loads(line) for line in open(METADATA_PATH, "r", encoding="utf-8")]
 
-app = FastAPI()
-
 class QueryRequest(BaseModel):
     question: str
-    image: Optional[str] = None  
+    image: Optional[str] = None
 
-def answer_question(data: QueryRequest):
+@app.post("/")
+def ask(data: QueryRequest):
     question = data.question.strip()
 
     if data.image:
@@ -36,7 +36,7 @@ def answer_question(data: QueryRequest):
             image = Image.open(io.BytesIO(image_data))
             extracted_text = pytesseract.image_to_string(image)
             question += " " + extracted_text.strip()
-        except Exception as e:
+        except Exception:
             return {"answer": "❌ Could not decode image.", "links": []}
 
     embedding = model.encode([question], normalize_embeddings=True)
@@ -46,17 +46,20 @@ def answer_question(data: QueryRequest):
     context = "\n---\n".join(relevant_chunks)
 
     dummy_links = []
+    unique_urls = set()
     for i in I[0]:
         if "url" in metadata[i]:
-            dummy_links.append({
-                "url": metadata[i]["url"],
-                "text": metadata[i].get("title", "Related Discourse Thread")
-            })
+            url = metadata[i]["url"]
+            if url not in unique_urls:
+                dummy_links.append({
+                    "url": url,
+                    "text": metadata[i].get("title", "Related Discourse Thread")
+                })
+                unique_urls.add(url)
+        if len(dummy_links) >= 5:
+            break
 
-    answer = f"📚 **Context:**\n{context}\n\n🤖 **Answer:**\nBased on the above, your question was: '{data.question.strip()}'."
-
-    return {"answer": answer, "links": dummy_links}
-
-@app.post("/api/")
-def ask(data: QueryRequest):
-    return answer_question(data)
+    return {
+        "answer": context,
+        "links": dummy_links
+    }
